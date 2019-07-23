@@ -1,115 +1,69 @@
 #! /bin/bash
 ###
 #
-# chkconfig: 35 29 51
+# Author: Selvakumar Esra
 # description:  Enables Confluent Platform Zookeeper service
-#
-### BEGIN INIT INFO
-# Provides:       cp-zookeeper
-# Required-Start: $network
-# Required-Stop:  $network
-# Should-Start:
-# Should-Stop:
-# Default-Start:  3 5
-# Default-Stop:   0 1 2 6
-# Short-Description: Manage Confluent Platform Zookeeper service
-### END INIT INFO
 #
 # Simple wrapper to start/stop services as part of
 # the Confluent Platform.   
 #
-#	rpm/deb installation : scripts in /etc/init.d
-#	tar/zip installation : scripts in $TOP/initscripts
 #
-
-
-# Source function library.
-if [ -r /etc/init.d/functions ]; then
-    . /etc/init.d/functions
-fi
-
-# Import LSB log_* and *-daemon functions.
-if [ -r /lib/lsb/init-functions ]; then
-    . /lib/lsb/init-functions
-fi
 
 exitCode=0
 name=cp-zk-service
 desc="Confluent Platform ZK daemon"
 
 # These variables __should__ be imported from a well-defined location
-THIS_SCRIPT="$(readlink -f ${BASH_SOURCE[0]})"
+THIS_SCRIPT="$(dirname "$(readlink "${BASH_SOURCE[0]}")")"
 INIT_HOME=$(dirname $THIS_SCRIPT)
 CONF_HOME=$(dirname $INIT_HOME)
 
-if [ -d $CONF_HOME/bin  -a  -x $CONF_HOME/bin/zookeeper-server-start ] ; then
-	CONF_KAFKA_BIN=$CONF_HOME/bin
-	CONF_ZK_BIN=$CONF_HOME/bin
-else
-	CONF_KAFKA_BIN=/usr/bin
-	CONF_ZK_BIN=/usr/bin
-fi
+CONF_BIN=$CONF_HOME/bin
+CONF_ETC_TOP=$CONF_HOME/etc
+CONF_PROPERTIES=${CONF_ETC_TOP}/kafka/zookeeper.properties
+CONF_USER=`stat -f '%Su' $CONF_PROPERTIES`
+PROPERTY_FILE_NAME=`basename $CONF_PROPERTIES`
 
-if [ -d $CONF_HOME/etc/kafka ] ; then
-	CONF_ZK_ETC=$CONF_HOME/etc/kafka
-else
-	CONF_ZK_ETC=/etc/kafka
-fi
+#echo "USER:" $CONF_USER
 
-CONF_ZK_PROPERTIES=${CONF_ZK_ETC}/zookeeper.properties
-CONF_ZK_USER=`stat -c "%U" $CONF_ZK_PROPERTIES`
-
-RC_PID_DIR=/var/run
-PIDFILE=$RC_PID_DIR/${name}.pid
-
-RC_LOCK_DIR=/var/lock/subsys
-[ ! -d $RC_LOCK_DIR ] && RC_LOCK_DIR=/var/lock
-LOCKFILE=$RC_LOCK_DIR/${name}
+# PID & LOCK files
+PID_DIR=var/run
+LOCK_DIR=var/lock/subsys
+PIDFILE=$PID_DIR/${name}.pid
+[ ! -d $LOCK_DIR ] && LOCK_DIR=var/lock
+LOCKFILE=$LOCK_DIR/${name}
 
 
 do_start() {
-	if which start-stop-daemon &> /dev/null ; then
-		log_daemon_msg "Starting $desc" "$name" 
-		start-stop-daemon --quiet --chuid $CONF_ZK_USER --pidfile $PIDFILE  --exec $CONF_ZK_BIN/zookeeper-server-start --start -- -daemon $CONF_ZK_PROPERTIES 
-		exitCode=$?
-		log_end_msg $exitCode
-	else
-		echo -n $"Starting $desc ($name): "
-		daemon --user $CONF_ZK_USER --pidfile $PIDFILE $CONF_ZK_BIN/zookeeper-server-start -daemon $CONF_ZK_PROPERTIES 
-		exitCode=$?
-		echo
-	fi
-
-		# Because the startup scripts use nohup, we have to
-		# do our own computation of PID here.
-	if [ $exitCode -eq 0 ] ; then
-		PID=`pgrep -a -u $CONF_ZK_USER java | grep -e $CONF_ZK_PROPERTIES | cut -f1 -d' '`
-		echo $PID > $PIDFILE
-	fi
-	[ $exitCode -eq 0 ] && [ -d $RC_LOCK_DIR ] && touch $LOCKFILE
-	return $exitCode
+	echo -n $"Starting $desc ($name) ... "
+    nohup $CONF_BIN/zookeeper-server-start $CONF_PROPERTIES >/dev/null 2>&1 &
+    if [ $? -eq 0 ] ; then
+        PID=`pgrep -u $CONF_USER -f $PROPERTY_FILE_NAME`
+        [ -n "${PID}" ] && echo $PID > $PIDFILE
+        exitCode=$?
+        echo "done"
+    else
+        echo "FAILED"
+        exit 1
+    fi
+    [ $exitCode -eq 0 ] && [ -d $LOCK_DIR ] && touch $LOCKFILE
+    return $exitCode
 }
 
 do_stop() {
 	[ -s $PIDFILE ] && PID=`cat $PIDFILE`
-	[ -z "${PID:-}"  ] && $CONF_ZK_BIN/zookeeper-server-stop $CONF_ZK_PROPERTIES
-	if which start-stop-daemon &> /dev/null ; then
-		log_daemon_msg "Stopping $desc" "$name"
-		start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE 
-		exitCode=$?
-		log_end_msg $exitCode
-	else
-		echo -n $"Stopping $desc ($name): "
-		if [ -f $PIDFILE ] ; then
-			PID=$(cat $PIDFILE)
-		else
-			PID=`pgrep -a -u $CONF_ZK_USER java | grep -e $CONF_ZK_PROPERTIES | cut -f1 -d' '`
-		fi
-		[ -n "$PID" ] && kill -9 $PID 
-		exitCode=$?
-		echo
-	fi
+	[ -z "${PID:-}"  ] && $CONF_BIN/zookeeper-server-stop $CONF_PROPERTIES
+    echo -n $"Stopping $desc ($name) "
+    if [ -f $PIDFILE ] ; then
+        PID=$(cat $PIDFILE)
+    else
+        PROPS=`basename $CONF_PROPERTIES`
+        PID=`pgrep -u $CONF_USER -f $PROPERTY_FILE_NAME`
+    fi
+    [ -n "$PID" ] && kill -9 $PID
+    exitCode=$?
 	[ $exitCode -eq 0 ] && rm -f $LOCKFILE $PIDFILE
+	echo "done"
 }
 
 do_restart() {
@@ -119,24 +73,12 @@ do_restart() {
 }
 
 do_status(){
-	if which apt-get &> /dev/null ; then
-		status_of_proc -p $PIDFILE $name $name
-		exitCode=$?
+    [ -s $PIDFILE ] && PID=`cat $PIDFILE`
+    CURRENT_PID=`pgrep -u $CONF_USER -f $PROPERTY_FILE_NAME`
+    if [[ ! -z "$PID" && ! -z "$CURRENT_PID" && "$PID" = "$CURRENT_PID" ]]  ; then
+        echo "($name) is running"
 	else
-		status -p $PIDFILE $name
-		exitCode=$?
-	fi
-}
-
-do_qstatus(){
-	[ -f $PIDFILE ] && PID=`cat $PIDFILE` 
-	[ -n "$PID"  ] && kill -0 "$PID" > /dev/null 2>&1 
-	if [ $? -eq 0 ] ;  then
-		eval $(grep ^clientPort ${CONF_ZK_PROPERTIES})
-		$CONF_KAFKA_BIN/kafka-run-class -name zookeeper org.apache.zookeeper.client.FourLetterWordMain localhost ${clientPort:-2181} srvr | grep ^Mode
-		exitCode=$?
-	else
-		exitCode=1
+		echo "($name) is not running. Restart $name"
 	fi
 }
 
@@ -155,9 +97,6 @@ case "$1" in
 	status)
 		do_status
 		;;
-	qstatus)
-		do_qstatus
-		;;
 	restart)
 		do_restart
 		;;
@@ -165,7 +104,7 @@ case "$1" in
 		do_condrestart
 		;;
 	*)
-		echo $"Usage: $0 {start|stop|status|qstatus|restart|condrestart}"
+		echo $"Usage: $0 {start|stop|status|restart|condrestart}"
 		exit 1
 esac
 
